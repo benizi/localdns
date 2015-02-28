@@ -203,6 +203,9 @@ func forward(w dns.ResponseWriter, req *dns.Msg) {
 func main() {
 	cnames := strings.Split(os.Getenv("CNAMES"), ",")
 	for _, item := range cnames {
+		if len(item) == 0 {
+			continue
+		}
 		srcTarget := strings.Split(item, ":")
 		src := dotted(srcTarget[0])
 		target := dotted(srcTarget[1])
@@ -210,11 +213,17 @@ func main() {
 	}
 
 	for _, self := range strings.Split(os.Getenv("SELF"), ",") {
+		if len(self) == 0 {
+			continue
+		}
 		log.Printf("Mapping *.%s to own IP", dotted(self))
 		dns.HandleFunc(dotted(self), selfAddressed)
 	}
 
 	for _, self := range strings.Split(os.Getenv("LOOP"), ",") {
+		if len(self) == 0 {
+			continue
+		}
 		log.Printf("Mapping *.%s to 127.0.0.1", dotted(self))
 		dns.HandleFunc(dotted(self), loopback)
 	}

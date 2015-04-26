@@ -32,6 +32,44 @@ func resolveA(name, proto string) (answers []dns.RR) {
 	return answers
 }
 
+var bogusIPs []net.IP
+
+func initBogus() {
+	env := os.Getenv("BOGUS")
+	for _, ip := range strings.Split(env, ",") {
+		if len(ip) != 0 {
+			log.Printf("Adding %s as a bogus IP", ip)
+			bogusIPs = append(bogusIPs, net.ParseIP(ip))
+		}
+	}
+}
+
+func isBogus(r dns.RR) bool {
+	a, isA := r.(*dns.A)
+	if !isA {
+		return false
+	}
+
+	for _, ip := range bogusIPs {
+		if ip.Equal(a.A) {
+			log.Printf("Bogus (Verizon) IP: %s => %s", ip, a.Hdr.Name)
+			return true
+		}
+	}
+
+	return false
+}
+
+func filterBogus(answers []dns.RR) (allBogus bool, nonBogus []dns.RR) {
+	for _, answer := range answers {
+		if !isBogus(answer) {
+			nonBogus = append(nonBogus, answer)
+		}
+	}
+	allBogus = (len(answers) != 0 && len(nonBogus) == 0)
+	return allBogus, nonBogus
+}
+
 func constantCNAME(src, target string) func(dns.ResponseWriter, *dns.Msg) {
 	log.Printf("Mapping *.%s CNAME %s\n", src, target)
 	return func(w dns.ResponseWriter, req *dns.Msg) {
@@ -192,6 +230,11 @@ func forward(w dns.ResponseWriter, req *dns.Msg) {
 	for _, server := range servers {
 		res, _, err := client.Exchange(req, server)
 		if err == nil {
+			allBogus, nonBogus := filterBogus(res.Answer)
+			res.Answer = nonBogus
+			if allBogus {
+				res.SetRcode(req, dns.RcodeNameError)
+			}
 			w.WriteMsg(res)
 			return
 		}
@@ -230,6 +273,8 @@ func main() {
 		log.Printf("Mapping *.%s to 127.0.0.1", dotted(self))
 		dns.HandleFunc(dotted(self), loopback)
 	}
+
+	initBogus()
 
 	dns.HandleFunc(".", forward)
 

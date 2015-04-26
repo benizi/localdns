@@ -140,6 +140,9 @@ func resolvConf() string {
 func upstreamFor(name string) (servers []string) {
 	env := os.Getenv("SERVERS")
 	for _, spec := range strings.Split(env, ",") {
+		if len(spec) == 0 {
+			continue
+		}
 		matchers := strings.Split(spec, "/")
 		server, matchers := matchers[len(matchers)-1], matchers[:len(matchers)-1]
 		match := len(matchers) == 0

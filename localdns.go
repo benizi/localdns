@@ -24,6 +24,7 @@ func resolveA(name, proto string) (answers []dns.RR) {
 		q.Question = make([]dns.Question, 1)
 		q.Question[0] = dns.Question{name, dns.TypeA, uint16(dns.ClassINET)}
 		q.Id = dns.Id()
+		q.RecursionDesired = true
 		res, _, err := client.Exchange(q, server)
 		if err == nil {
 			answers = append(answers, res.Answer...)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/miekg/dns"
 	"log"
+	"math/rand"
 	"net"
 	"os"
 	"strings"
@@ -42,6 +43,42 @@ func initBogus() {
 			log.Printf("Adding %s as a bogus IP", ip)
 			bogusIPs = append(bogusIPs, net.ParseIP(ip))
 		}
+	}
+
+	appendBogusFromRandomSearch()
+}
+
+func appendBogusFromRandomSearch() {
+	seen := map[string]bool{}
+	for _, ip := range bogusIPs {
+		seen[ip.String()] = true
+	}
+
+	known := len(seen)
+
+	for l := 7; l <= 9; l++ {
+		host := ""
+		for len(host) < l {
+			host += string(rune('a' + rand.Intn('z' - 'a')))
+		}
+		for _, rr := range resolveA(dotted(host), "udp4") {
+			if a, isA := rr.(*dns.A); isA {
+				_, already := seen[a.A.String()]
+				if !already {
+					bogusIPs = append(bogusIPs, a.A)
+					seen[a.A.String()] = true
+				}
+				log.Printf("Random host %s => IP %s", host, a.A)
+			}
+		}
+	}
+
+	if len(seen) > known {
+		for i := known; i < len(bogusIPs); i++ {
+			log.Printf("New bogus IP found: %s", bogusIPs[i])
+		}
+	} else {
+		log.Println("No new bogus IPs discovered")
 	}
 }
 

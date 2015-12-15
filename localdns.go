@@ -328,8 +328,14 @@ func main() {
 		}
 	}
 
+	serve6 := addr[0] == ':'
+
 	go serveDNS("tcp4", addr)
 	go serveDNS("udp4", addr)
+	if serve6 {
+		go serveDNS("tcp6", addr)
+		go serveDNS("udp6", addr)
+	}
 
 	select {}
 }

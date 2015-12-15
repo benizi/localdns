@@ -11,6 +11,16 @@ import (
 	"time"
 )
 
+type debugging bool
+
+var debug debugging
+
+func (d debugging) Printf(format string, args ...interface{}) {
+	if d {
+		log.Printf(format, args...)
+	}
+}
+
 func protoFor(addr net.Addr) string {
 	if _, isTCP := addr.(*net.TCPAddr); isTCP {
 		return "tcp"
@@ -90,7 +100,7 @@ func isBogus(r dns.RR) bool {
 
 	for _, ip := range bogusIPs {
 		if ip.Equal(a.A) {
-			log.Printf("Bogus (Verizon) IP: %s => %s", ip, a.Hdr.Name)
+			debug.Printf("Bogus (Verizon) IP: %s => %s", ip, a.Hdr.Name)
 			return true
 		}
 	}
@@ -253,6 +263,7 @@ func upstreamFor(name string) (servers []string) {
 
 // adapted from skydns1/server/server.go#ServeDNSForward
 func forward(w dns.ResponseWriter, req *dns.Msg) {
+	debug.Printf("Q[%v] from[%v]\n", req.Question[0].Name, w.RemoteAddr())
 	servers := upstreamFor(req.Question[0].Name)
 	if len(servers) == 0 {
 		m := new(dns.Msg)
@@ -285,6 +296,8 @@ func forward(w dns.ResponseWriter, req *dns.Msg) {
 }
 
 func main() {
+	debug = len(os.Getenv("DEBUG")) != 0
+
 	cnames := strings.Split(os.Getenv("CNAMES"), ",")
 	for _, item := range cnames {
 		if len(item) == 0 {

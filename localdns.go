@@ -223,7 +223,7 @@ func resolvConf() string {
 	return "/etc/resolv.conf"
 }
 
-func upstreamFor(name string) (servers []string) {
+func upstreamFromEnv(name string) (servers []string) {
 	env := os.Getenv("SERVERS")
 	for _, spec := range strings.Split(env, ",") {
 		if len(spec) == 0 {
@@ -245,11 +245,10 @@ func upstreamFor(name string) (servers []string) {
 			servers = append(servers, strings.Split(server, ",")...)
 		}
 	}
+	return servers
+}
 
-	if len(servers) > 0 {
-		return servers
-	}
-
+func upstreamFromConfig() (servers []string) {
 	// from skydns1/server/server.go
 	config, err := dns.ClientConfigFromFile(resolvConf())
 	if err == nil {
@@ -258,6 +257,22 @@ func upstreamFor(name string) (servers []string) {
 		}
 	}
 
+	return servers
+}
+
+func upstreamFor(name string) (servers []string) {
+	addresses := upstreamFromEnv(name)
+	if len(addresses) == 0 {
+		addresses = append(addresses, upstreamFromConfig()...)
+	}
+	for _, addr := range addresses {
+		_, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			addr = net.JoinHostPort(addr, "53")
+		}
+		servers = append(servers, addr)
+	}
+	debug.Printf("upstreamFor(%v) -> %v\n", name, servers)
 	return servers
 }
 

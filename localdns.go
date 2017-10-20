@@ -287,6 +287,7 @@ func forward(w dns.ResponseWriter, req *dns.Msg) {
 			w.WriteMsg(res)
 			return
 		}
+		debug.Printf(" <- ERR: %v\n", err)
 	}
 
 	m := new(dns.Msg)

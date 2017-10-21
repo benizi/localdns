@@ -311,9 +311,11 @@ func forward(w dns.ResponseWriter, req *dns.Msg) {
 	w.WriteMsg(m)
 }
 
-func main() {
+func setupDebug() {
 	debug = len(os.Getenv("DEBUG")) != 0
+}
 
+func setupCnames() {
 	cnames := strings.Split(os.Getenv("CNAMES"), ",")
 	for _, item := range cnames {
 		if len(item) == 0 {
@@ -324,7 +326,9 @@ func main() {
 		target := dotted(srcTarget[1])
 		dns.HandleFunc(src, constantCNAME(src, target))
 	}
+}
 
+func setupSelf() {
 	for _, self := range strings.Split(os.Getenv("SELF"), ",") {
 		if len(self) == 0 {
 			continue
@@ -332,7 +336,9 @@ func main() {
 		log.Printf("Mapping *.%s to own IP", dotted(self))
 		dns.HandleFunc(dotted(self), selfAddressed)
 	}
+}
 
+func setupLoop() {
 	for _, self := range strings.Split(os.Getenv("LOOP"), ",") {
 		if len(self) == 0 {
 			continue
@@ -340,6 +346,13 @@ func main() {
 		log.Printf("Mapping *.%s to 127.0.0.1", dotted(self))
 		dns.HandleFunc(dotted(self), loopback)
 	}
+}
+
+func main() {
+	setupDebug()
+	setupCnames()
+	setupSelf()
+	setupLoop()
 
 	initBogus()
 

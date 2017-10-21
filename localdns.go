@@ -397,7 +397,7 @@ func setupIface() {
 	for _, iface := range strings.Split(os.Getenv("IFACE"), ",") {
 		parts := strings.Split(iface, "%")
 		if len(parts) < 2 {
-			log.Printf("IFACE should be of the form: domain%iface1%iface2")
+			log.Printf("IFACE should be of the form: domain%%iface1%%iface2")
 			continue
 		}
 		dmatch, ifnames := dotted(parts[0]), parts[1:]

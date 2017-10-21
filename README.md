@@ -54,6 +54,10 @@ All configuration is via environment variables.
     - `*.name` will point to local, non-loopback IP address(es)
     - no default
 
+- `IFACE=name%iface1%iface2...`
+    - `*.name` will point to IP addresses assigned to interface(s) `iface1`...
+    - no default
+
 - `LOOP=name,name2,...`
     - `*.name` will point to 127.0.0.1
     - no default
@@ -85,6 +89,7 @@ All configuration is via environment variables.
 sudo env \
   CNAMES=nginx.nginx.dev.docker:example.dev \
   SELF=me \
+  IFACE=ether%enp0s25 \
   LOOP=dev \
   SERVERS=docker/127.0.0.1:5553,int.vpc/10.10.1.51,int.vpc/10.10.1.50 \
   RESOLV=/etc/resolv.conf.upstream \
@@ -111,6 +116,10 @@ google.com.  193  IN  A  74.125.228.7
 google.com.  193  IN  A  74.125.228.2
 google.com.  193  IN  A  74.125.228.8
 ...
+
+$ dig @localhost +noall +answer reflect.ether
+reflect.ether.  60  IN  A     10.50.50.54
+reflect.ether.  60  IN  AAAA  fe80::d7db:9dbf:f031:761c
 ```
 
 ## Permissions

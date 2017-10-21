@@ -227,6 +227,35 @@ func selfAddressed(w dns.ResponseWriter, req *dns.Msg) {
 	w.WriteMsg(m)
 }
 
+func ifaddr(ifnames ...string) func(dns.ResponseWriter, *dns.Msg) {
+	return func(w dns.ResponseWriter, req *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(req)
+		for _, ifname := range ifnames {
+			ifi, err := net.InterfaceByName(ifname)
+			if err != nil {
+				debug.Printf(" Interface(%s) err: %v\n", ifname, err)
+				continue
+			}
+			addrs, err := ifi.Addrs()
+			if err != nil {
+				debug.Printf(" Interface(%s).Addrs() err: %v\n", ifname, err)
+				continue
+			}
+			for _, addr := range addrs {
+				debug.Printf(" IFI(%s) -> %v\n", ifname, addr)
+				network, valid := addr.(*net.IPNet)
+				if !valid {
+					debug.Printf(" !IP: %v\n", addr)
+					continue
+				}
+				addAnswer(m, req.Question[0].Name, network.IP)
+			}
+		}
+		w.WriteMsg(m)
+	}
+}
+
 func loopback(w dns.ResponseWriter, req *dns.Msg) {
 	m := new(dns.Msg)
 	m.SetReply(req)
@@ -362,6 +391,19 @@ func setupSelf() {
 	}
 }
 
+func setupIface() {
+	for _, iface := range strings.Split(os.Getenv("IFACE"), ",") {
+		parts := strings.Split(iface, "%")
+		if len(parts) < 2 {
+			log.Printf("IFACE should be of the form: domain%iface1%iface2")
+			continue
+		}
+		dmatch, ifnames := dotted(parts[0]), parts[1:]
+		log.Printf("Mapping *.%s to IP(s) of interfaces %v", dmatch, ifnames)
+		dns.HandleFunc(dmatch, ifaddr(ifnames...))
+	}
+}
+
 func setupLoop() {
 	for _, self := range strings.Split(os.Getenv("LOOP"), ",") {
 		if len(self) == 0 {
@@ -376,6 +418,7 @@ func main() {
 	setupDebug()
 	setupCnames()
 	setupSelf()
+	setupIface()
 	setupLoop()
 
 	initBogus()

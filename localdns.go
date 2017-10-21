@@ -118,7 +118,9 @@ func filterBogus(answers []dns.RR) (allBogus bool, nonBogus []dns.RR) {
 	return allBogus, nonBogus
 }
 
-func constantCNAME(src, target string) func(dns.ResponseWriter, *dns.Msg) {
+type responder func(dns.ResponseWriter, *dns.Msg)
+
+func constantCNAME(src, target string) responder {
 	log.Printf("Mapping *.%s CNAME %s\n", src, target)
 	return func(w dns.ResponseWriter, req *dns.Msg) {
 		m := new(dns.Msg)
@@ -227,7 +229,7 @@ func selfAddressed(w dns.ResponseWriter, req *dns.Msg) {
 	w.WriteMsg(m)
 }
 
-func ifaddr(ifnames ...string) func(dns.ResponseWriter, *dns.Msg) {
+func ifaddr(ifnames ...string) responder {
 	return func(w dns.ResponseWriter, req *dns.Msg) {
 		m := new(dns.Msg)
 		m.SetReply(req)

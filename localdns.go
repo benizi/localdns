@@ -180,7 +180,19 @@ func findMyIP() (ips []net.IP) {
 	return ips
 }
 
+// If the IP is representable as IPv4, add an `A` record. Otherwise, if it is
+// representable as IPv6, add an `AAAA` record.
 func addAnswer(msg *dns.Msg, name string, ip net.IP) {
+	if ip.To4() != nil {
+		addAnswerA(msg, name, ip)
+	} else if ip.To16() != nil {
+		addAnswerAAAA(msg, name, ip)
+	} else {
+		debug.Printf(" !(IPv4 || IPv6): %s -> %v\n", name, ip)
+	}
+}
+
+func addAnswerA(msg *dns.Msg, name string, ip net.IP) {
 	r := new(dns.A)
 	r.Hdr = dns.RR_Header{
 		Name: name,
@@ -189,6 +201,18 @@ func addAnswer(msg *dns.Msg, name string, ip net.IP) {
 		Ttl: 60,
 	}
 	r.A = ip.To4()
+	msg.Answer = append(msg.Answer, r)
+}
+
+func addAnswerAAAA(msg *dns.Msg, name string, ip net.IP) {
+	r := new(dns.AAAA)
+	r.Hdr = dns.RR_Header{
+		Name: name,
+		Rrtype: dns.TypeAAAA,
+		Class: dns.ClassINET,
+		Ttl: 60,
+	}
+	r.AAAA = ip.To16()
 	msg.Answer = append(msg.Answer, r)
 }
 

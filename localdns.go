@@ -182,6 +182,8 @@ func findMyIP() (ips []net.IP) {
 	return ips
 }
 
+type answeradder func(*dns.Msg, string, net.IP)
+
 // If the IP is representable as IPv4, add an `A` record. Otherwise, if it is
 // representable as IPv6, add an `AAAA` record.
 func addAnswer(msg *dns.Msg, name string, ip net.IP) {
@@ -191,6 +193,14 @@ func addAnswer(msg *dns.Msg, name string, ip net.IP) {
 		addAnswerAAAA(msg, name, ip)
 	} else {
 		debug.Printf(" !(IPv4 || IPv6): %s -> %v\n", name, ip)
+	}
+}
+
+func addAnswerOnly4(msg *dns.Msg, name string, ip net.IP) {
+	if ip.To4() != nil {
+		addAnswerA(msg, name, ip)
+	} else {
+		debug.Printf(" !IPv4: %s -> %v\n", name, ip)
 	}
 }
 
@@ -229,7 +239,7 @@ func selfAddressed(w dns.ResponseWriter, req *dns.Msg) {
 	w.WriteMsg(m)
 }
 
-func ifaddr(ifnames ...string) responder {
+func ifaddr(adder answeradder, ifnames ...string) responder {
 	return func(w dns.ResponseWriter, req *dns.Msg) {
 		m := new(dns.Msg)
 		m.SetReply(req)
@@ -251,7 +261,7 @@ func ifaddr(ifnames ...string) responder {
 					debug.Printf(" !IP: %v\n", addr)
 					continue
 				}
-				addAnswer(m, req.Question[0].Name, network.IP)
+				adder(m, req.Question[0].Name, network.IP)
 			}
 		}
 		w.WriteMsg(m)
@@ -396,13 +406,30 @@ func setupSelf() {
 func setupIface() {
 	for _, iface := range strings.Split(os.Getenv("IFACE"), ",") {
 		parts := strings.Split(iface, "%")
-		if len(parts) < 2 {
+		logErr := func() {
 			log.Printf("IFACE should be of the form: domain%%iface1%%iface2")
+		}
+		if len(parts) < 2 {
+			logErr()
 			continue
 		}
-		dmatch, ifnames := dotted(parts[0]), parts[1:]
+		dmatch := dotted(parts[0])
+		ifnames := []string{}
+		adder := addAnswer
+		for _, ifname := range parts[1:] {
+			if ifname == "4" || ifname == "only4" {
+				adder = addAnswerOnly4
+				debug.Printf("Only returning A records for %s\n", dmatch)
+				continue
+			}
+			ifnames = append(ifnames, ifname)
+		}
+		if len(ifnames) == 0 {
+			logErr()
+			continue
+		}
 		log.Printf("Mapping *.%s to IP(s) of interfaces %v", dmatch, ifnames)
-		dns.HandleFunc(dmatch, ifaddr(ifnames...))
+		dns.HandleFunc(dmatch, ifaddr(adder, ifnames...))
 	}
 }
 

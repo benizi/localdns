@@ -188,9 +188,9 @@ type answeradder func(*dns.Msg, string, net.IP)
 // representable as IPv6, add an `AAAA` record.
 func addAnswer(msg *dns.Msg, name string, ip net.IP) {
 	if ip.To4() != nil {
-		addAnswerA(msg, name, ip)
+		appendRR(msg, aRecord(name, ip))
 	} else if ip.To16() != nil {
-		addAnswerAAAA(msg, name, ip)
+		appendRR(msg, aaaaRecord(name, ip))
 	} else {
 		debug.Printf(" !(IPv4 || IPv6): %s -> %v\n", name, ip)
 	}
@@ -198,34 +198,37 @@ func addAnswer(msg *dns.Msg, name string, ip net.IP) {
 
 func addAnswerOnly4(msg *dns.Msg, name string, ip net.IP) {
 	if ip.To4() != nil {
-		addAnswerA(msg, name, ip)
+		appendRR(msg, aRecord(name, ip))
 	} else {
 		debug.Printf(" !IPv4: %s -> %v\n", name, ip)
 	}
 }
 
-func addAnswerA(msg *dns.Msg, name string, ip net.IP) {
-	r := new(dns.A)
-	r.Hdr = dns.RR_Header{
-		Name: name,
-		Rrtype: dns.TypeA,
-		Class: dns.ClassINET,
-		Ttl: 60,
+func rrHeader(name string, rtype uint16, ttl uint32) dns.RR_Header {
+	return dns.RR_Header{
+		Name:   name,
+		Rrtype: rtype,
+		Class:  dns.ClassINET,
+		Ttl:    ttl,
 	}
-	r.A = ip.To4()
-	msg.Answer = append(msg.Answer, r)
 }
 
-func addAnswerAAAA(msg *dns.Msg, name string, ip net.IP) {
-	r := new(dns.AAAA)
-	r.Hdr = dns.RR_Header{
-		Name: name,
-		Rrtype: dns.TypeAAAA,
-		Class: dns.ClassINET,
-		Ttl: 60,
+func aRecord(name string, ip net.IP) *dns.A {
+	return &dns.A{
+		Hdr: rrHeader(name, dns.TypeA, 60),
+		A: ip.To4(),
 	}
-	r.AAAA = ip.To16()
-	msg.Answer = append(msg.Answer, r)
+}
+
+func aaaaRecord(name string, ip net.IP) *dns.AAAA {
+	return &dns.AAAA{
+		Hdr: rrHeader(name, dns.TypeAAAA, 60),
+		AAAA: ip.To16(),
+	}
+}
+
+func appendRR(msg *dns.Msg, rr dns.RR) {
+	msg.Answer = append(msg.Answer, rr)
 }
 
 func selfAddressed(w dns.ResponseWriter, req *dns.Msg) {

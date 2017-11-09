@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/miekg/dns"
+	"io/ioutil"
 	"log"
 	"math/rand"
 	"net"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -278,6 +282,165 @@ func loopback(w dns.ResponseWriter, req *dns.Msg) {
 	w.WriteMsg(m)
 }
 
+type dockerNetwork struct {
+	Name, Id   string
+	Containers map[string]dockerNetworkHost
+}
+
+type dockerNetworkHost struct {
+	Name        string
+	IPv4Address string
+	IPv6Address string
+}
+
+type dockerContainer struct {
+	Id              string
+	State           dockerStatus
+	NetworkSettings dockerContainerNetworkSettings
+}
+
+type dockerStatus struct {
+	Status  string
+	Running bool
+}
+
+type dockerContainerNetworkSettings struct {
+	// TODO: I only use one, scalar field. Any way to un-nest this?
+	IPAddress string
+}
+
+// TODO: more general support for DOCKER_HOST
+type dockerDialer struct {
+	filename string
+}
+
+func (d *dockerDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	dialer := &net.Dialer{}
+	return dialer.DialContext(ctx, "unix", d.filename)
+}
+
+var isDockerTLD = map[string]bool{}
+
+func dockerAPI(path string) ([]byte, error) {
+	onlyDocker := (&dockerDialer{"/var/run/docker.sock"}).DialContext
+	client := &http.Client{Transport: &http.Transport{DialContext: onlyDocker}}
+	res, err := client.Get(fmt.Sprintf("http://docker%s", path))
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	return ioutil.ReadAll(res.Body)
+}
+
+func dockerGetContainer(name string) (container dockerContainer, err error) {
+	path := fmt.Sprintf("/containers/%s/json", name)
+	var body []byte
+	body, err = dockerAPI(path)
+	if err == nil {
+		err = json.Unmarshal(body, &container)
+	}
+	if container.Id == "" {
+		err = fmt.Errorf("Docker container %s not found", name)
+	}
+	return container, err
+}
+
+func dockerGetAll() (hosts []dockerNetworkHost, err error) {
+	// To list all: get network names, then containers per-network
+	var networks []dockerNetwork
+	var body []byte
+	body, err = dockerAPI("/networks")
+	if err == nil {
+		if err = json.Unmarshal(body, &networks); err == nil {
+			for _, network := range networks {
+				body, err = dockerAPI(fmt.Sprintf("/networks/%s", network.Name))
+				if err != nil {
+					break
+				}
+				var network dockerNetwork
+				if err = json.Unmarshal(body, &network); err != nil {
+					break
+				}
+				for _, host := range network.Containers {
+					hosts = append(hosts, host)
+				}
+			}
+		}
+	}
+	return hosts, err
+}
+
+func dockerList(w dns.ResponseWriter, req *dns.Msg, strip int) {
+	m := new(dns.Msg)
+	m.SetReply(req)
+	labels := dns.SplitDomainName(req.Question[0].Name)
+	qName := dotted(strings.Join(labels[strip:], "."))
+	if hosts, err := dockerGetAll(); err == nil {
+		for _, host := range hosts {
+			name := dotted(fmt.Sprintf("%s.%s", host.Name, qName))
+			for _, addr := range []string{host.IPv4Address, host.IPv6Address} {
+				if addr == "" {
+					continue
+				}
+				var ip net.IP
+				ip, _, err = net.ParseCIDR(addr)
+				if err == nil {
+					addAnswer(m, name, ip)
+				}
+			}
+		}
+	}
+	w.WriteMsg(m)
+}
+
+func dockerResolve(w dns.ResponseWriter, req *dns.Msg) {
+	m := new(dns.Msg)
+	m.SetReply(req)
+	labels := dns.SplitDomainName(req.Question[0].Name)
+	host, tld := "", ""
+	isDocker := false
+	for i, label := range labels {
+		host = label
+		tld = strings.Join(labels[i+1:], ".")
+		if isDockerTLD[dotted(tld)] {
+			isDocker = true
+			break
+		}
+	}
+	if len(labels) >= 2 {
+		info, err := dockerGetContainer(name)
+		if err == nil {
+			if info.State.Status == "" || info.State.Running {
+				addr := info.NetworkSettings.IPAddress
+				if addr != "" {
+					addAnswer(m, req.Question[0].Name, net.ParseIP(addr))
+				}
+			}
+		} else {
+			debug.Printf("dockerGetContainer(%s): %v", name, err)
+		}
+	}
+	w.WriteMsg(m)
+}
+
+func docker(w dns.ResponseWriter, req *dns.Msg) {
+	q := req.Question[0]
+	listAll := req.Question[0].Qtype == dns.TypeSRV
+	strip := 0
+	labels := dns.SplitDomainName(req.Question[0].Name)
+	if isDockerTLD[q.Name] {
+		listAll = true
+	} else if labels[0] == "*" || labels[0][0] == '_' {
+			listAll = true
+			strip = 1
+	}
+	if listAll {
+		dockerList(w, req, strip)
+	} else {
+		dockerResolve(w, req)
+	}
+}
+
 func serveDNS(proto string, addr string) {
 	log.Printf("Serving DNS over %s on %s\n", proto, addr)
 	log.Fatal(dns.ListenAndServe(addr, proto, nil))
@@ -446,12 +609,24 @@ func setupLoop() {
 	}
 }
 
+func setupDocker() {
+	for _, tld := range strings.Split(os.Getenv("DOCKER"), ",") {
+		if tld == "" {
+			continue
+		}
+		log.Printf("Serving Docker hosts on .%s", dotted(tld))
+		dns.HandleFunc(dotted(tld), docker)
+		isDockerTLD[dotted(tld)] = true
+	}
+}
+
 func main() {
 	setupDebug()
 	setupCnames()
 	setupSelf()
 	setupIface()
 	setupLoop()
+	setupDocker()
 
 	initBogus()
 

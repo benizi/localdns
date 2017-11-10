@@ -231,6 +231,16 @@ func aaaaRecord(name string, ip net.IP) *dns.AAAA {
 	}
 }
 
+func srvRecord(name string, priority, weight, port uint16, target string) *dns.SRV {
+	return &dns.SRV{
+		Hdr: rrHeader(name, dns.TypeSRV, 60),
+		Priority: priority,
+		Weight: weight,
+		Port: port,
+		Target: target,
+	}
+}
+
 func appendRR(msg *dns.Msg, rr dns.RR) {
 	msg.Answer = append(msg.Answer, rr)
 }

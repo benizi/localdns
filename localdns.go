@@ -407,8 +407,8 @@ func dockerResolve(w dns.ResponseWriter, req *dns.Msg) {
 			break
 		}
 	}
-	if len(labels) >= 2 {
-		info, err := dockerGetContainer(name)
+	if isDocker {
+		info, err := dockerGetContainer(host)
 		if err == nil {
 			if info.State.Status == "" || info.State.Running {
 				addr := info.NetworkSettings.IPAddress
@@ -417,7 +417,7 @@ func dockerResolve(w dns.ResponseWriter, req *dns.Msg) {
 				}
 			}
 		} else {
-			debug.Printf("dockerGetContainer(%s): %v", name, err)
+			debug.Printf("dockerGetContainer(%s): %v", host, err)
 		}
 	}
 	w.WriteMsg(m)
@@ -425,14 +425,14 @@ func dockerResolve(w dns.ResponseWriter, req *dns.Msg) {
 
 func docker(w dns.ResponseWriter, req *dns.Msg) {
 	q := req.Question[0]
-	listAll := req.Question[0].Qtype == dns.TypeSRV
+	listAll := q.Qtype == dns.TypeSRV
 	strip := 0
-	labels := dns.SplitDomainName(req.Question[0].Name)
+	labels := dns.SplitDomainName(q.Name)
 	if isDockerTLD[q.Name] {
 		listAll = true
 	} else if labels[0] == "*" || labels[0][0] == '_' {
-			listAll = true
-			strip = 1
+		listAll = true
+		strip = 1
 	}
 	if listAll {
 		dockerList(w, req, strip)

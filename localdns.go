@@ -73,7 +73,7 @@ func appendBogusFromRandomSearch() {
 	for l := 7; l <= 9; l++ {
 		host := ""
 		for len(host) < l {
-			host += string(rune('a' + rand.Intn('z' - 'a')))
+			host += string(rune('a' + rand.Intn('z'-'a')))
 		}
 		for _, rr := range resolveA(dotted(host), "udp4") {
 			if a, isA := rr.(*dns.A); isA {
@@ -132,10 +132,10 @@ func constantCNAME(src, target string) responder {
 
 		r := new(dns.CNAME)
 		r.Hdr = dns.RR_Header{
-			Name: req.Question[0].Name,
+			Name:   req.Question[0].Name,
 			Rrtype: dns.TypeCNAME,
-			Class: dns.ClassINET,
-			Ttl: 60,
+			Class:  dns.ClassINET,
+			Ttl:    60,
 		}
 		r.Target = target
 		m.Answer = append(m.Answer, r)
@@ -220,24 +220,24 @@ func rrHeader(name string, rtype uint16, ttl uint32) dns.RR_Header {
 func aRecord(name string, ip net.IP) *dns.A {
 	return &dns.A{
 		Hdr: rrHeader(name, dns.TypeA, 60),
-		A: ip.To4(),
+		A:   ip.To4(),
 	}
 }
 
 func aaaaRecord(name string, ip net.IP) *dns.AAAA {
 	return &dns.AAAA{
-		Hdr: rrHeader(name, dns.TypeAAAA, 60),
+		Hdr:  rrHeader(name, dns.TypeAAAA, 60),
 		AAAA: ip.To16(),
 	}
 }
 
 func srvRecord(name string, priority, weight, port uint16, target string) *dns.SRV {
 	return &dns.SRV{
-		Hdr: rrHeader(name, dns.TypeSRV, 60),
+		Hdr:      rrHeader(name, dns.TypeSRV, 60),
 		Priority: priority,
-		Weight: weight,
-		Port: port,
-		Target: target,
+		Weight:   weight,
+		Port:     port,
+		Target:   target,
 	}
 }
 
@@ -476,7 +476,7 @@ func upstreamFromEnv(name string) (servers []string) {
 
 		for _, matcher := range matchers {
 			dmatch := dotted(matcher)
-			if strings.HasSuffix(name, "." + dmatch) || name == dmatch {
+			if strings.HasSuffix(name, "."+dmatch) || name == dmatch {
 				match = true
 				break
 			}

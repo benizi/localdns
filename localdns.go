@@ -633,7 +633,31 @@ func setupDocker() {
 	}
 }
 
+func usage() {
+	fmt.Println(strings.TrimSpace(`
+localdns accepts no commandline arguments.
+
+Config vars:
+    ADDR= ip:port
+    BOGUS= ip [ ,ip ]*
+    CNAMES= tld:host [ ,tld:host ]*
+    DEBUG= (any non-empty value = active)
+    DOCKER= tld,...
+    IFACE= tld%iface [ %iface ]* [ ,tld%iface [ %iface ]* ]*
+    LOOP= tld [ ,tld ]*
+    PORT= port
+    RESOLV= filename
+    SELF= tld [ ,tld ]*
+    SERVERS= [ tld/ ]* host [ , [ tld/ ]* host ]*
+`))
+	os.Exit(0)
+}
+
 func main() {
+	if len(os.Args) > 1 {
+		usage()
+	}
+
 	setupDebug()
 	setupCnames()
 	setupSelf()

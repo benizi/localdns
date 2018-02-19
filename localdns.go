@@ -581,6 +581,9 @@ func setupSelf() {
 
 func setupIface() {
 	for _, iface := range strings.Split(os.Getenv("IFACE"), ",") {
+		if iface == "" {
+			continue
+		}
 		parts := strings.Split(iface, "%")
 		logErr := func() {
 			log.Printf("IFACE should be of the form: domain%%iface1%%iface2")

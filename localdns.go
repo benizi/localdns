@@ -124,15 +124,17 @@ func filterBogus(answers []dns.RR) (allBogus bool, nonBogus []dns.RR) {
 
 type responder func(dns.ResponseWriter, *dns.Msg)
 
-func constantCNAME(src, target string) responder {
-	log.Printf("Mapping *.%s CNAME %s\n", src, target)
+func cnameResponder(mapper func(string) string) responder {
 	return func(w dns.ResponseWriter, req *dns.Msg) {
+		reqName := req.Question[0].Name
+		target := mapper(reqName)
+
 		m := new(dns.Msg)
 		m.SetReply(req)
 
 		r := new(dns.CNAME)
 		r.Hdr = dns.RR_Header{
-			Name:   req.Question[0].Name,
+			Name:   reqName,
 			Rrtype: dns.TypeCNAME,
 			Class:  dns.ClassINET,
 			Ttl:    60,
@@ -145,6 +147,28 @@ func constantCNAME(src, target string) responder {
 
 		w.WriteMsg(m)
 	}
+}
+
+func constantCNAME(src, target string) responder {
+	log.Printf("Mapping *.%s CNAME %s\n", src, target)
+	return cnameResponder(func(local string) string {
+		return target
+	})
+}
+
+func mapCNAME(template, local string) string {
+	return dotted(strings.Join(strings.Split(template, "%s"), local))
+}
+
+func mappedCNAME(src, dst string) responder {
+	srcLabels := dns.SplitDomainName(src)
+	return cnameResponder(func(reqName string) string {
+		reqLabels := dns.SplitDomainName(reqName)
+		lastLocal := len(reqLabels) - len(srcLabels)
+		target := mapCNAME(dst, strings.Join(reqLabels[:lastLocal], "."))
+		log.Printf("CNAMEMAP(%s:%s): %s -> %s", src, dst, reqName, target)
+		return target
+	})
 }
 
 func dotted(name string) (withDot string) {
@@ -569,6 +593,22 @@ func setupCnames() {
 	}
 }
 
+func setupCnameMap() {
+	for _, mapping := range strings.Split(os.Getenv("CNAMEMAP"), ",") {
+		if mapping == "" {
+			continue
+		}
+		parts := strings.Split(mapping, ":")
+		if len(parts) != 2 {
+			log.Fatalf("Bad CNAMEMAP value: no source TLD: %s", mapping)
+		}
+		src, dst := dotted(parts[0]), parts[1]
+		sub := "{{host}}"
+		log.Printf("Mapping *.%s.%s to %s", sub, src, mapCNAME(dst, sub))
+		dns.HandleFunc(src, mappedCNAME(src, dst))
+	}
+}
+
 func setupSelf() {
 	for _, self := range strings.Split(os.Getenv("SELF"), ",") {
 		if len(self) == 0 {
@@ -640,6 +680,7 @@ localdns accepts no commandline arguments.
 Config vars:
     ADDR= ip:port
     BOGUS= ip [ ,ip ]*
+    CNAMEMAP= tld:template [ ,tld:template ]*
     CNAMES= tld:host [ ,tld:host ]*
     DEBUG= (any non-empty value = active)
     DOCKER= tld,...
@@ -660,6 +701,7 @@ func main() {
 
 	setupDebug()
 	setupCnames()
+	setupCnameMap()
 	setupSelf()
 	setupIface()
 	setupLoop()

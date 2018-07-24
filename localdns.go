@@ -11,18 +11,24 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
 
-type debugging bool
+type debugging int
 
 var debug debugging
 
-func (d debugging) Printf(format string, args ...interface{}) {
-	if d {
-		log.Printf(format, args...)
+func (d debugging) Debugf(level int, format string, args ...interface{}) {
+	if d < debugging(level) {
+		return
 	}
+	log.Printf(format, args...)
+}
+
+func (d debugging) Printf(format string, args ...interface{}) {
+	d.Debugf(1, format, args...)
 }
 
 func protoFor(addr net.Addr) string {
@@ -577,7 +583,12 @@ func forward(w dns.ResponseWriter, req *dns.Msg) {
 }
 
 func setupDebug() {
-	debug = len(os.Getenv("DEBUG")) != 0
+	env := os.Getenv("DEBUG")
+	if n, err := strconv.Atoi(env); err == nil {
+		debug = debugging(n)
+	} else if env != "" {
+		debug = 1
+	}
 }
 
 func setupCnames() {

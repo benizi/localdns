@@ -46,6 +46,7 @@ func resolveA(name, proto string) (answers []dns.RR) {
 		q.Question[0] = dns.Question{name, dns.TypeA, uint16(dns.ClassINET)}
 		q.Id = dns.Id()
 		q.RecursionDesired = true
+		debug.Debugf(2, "resolveA : q : %#+v", q)
 		res, _, err := client.Exchange(q, server)
 		if err == nil {
 			answers = append(answers, res.Answer...)
@@ -551,7 +552,9 @@ func upstreamFor(name string) (servers []string) {
 func forward(w dns.ResponseWriter, req *dns.Msg) {
 	debug.Printf("Q[%v] from[%v]\n", req.Question[0].Name, w.RemoteAddr())
 	servers := upstreamFor(req.Question[0].Name)
+	debug.Debugf(2, "forward : servers : %q", servers)
 	if len(servers) == 0 {
+		debug.Printf("forward : len(servers) == 0")
 		m := new(dns.Msg)
 		m.SetReply(req)
 		m.SetRcode(req, dns.RcodeServerFailure)
@@ -563,6 +566,7 @@ func forward(w dns.ResponseWriter, req *dns.Msg) {
 
 	client := &dns.Client{Net: protoFor(w.RemoteAddr()), ReadTimeout: 5 * time.Second}
 	for _, server := range servers {
+		debug.Debugf(2, "forward : server : %s", server)
 		res, _, err := client.Exchange(req, server)
 		if err == nil {
 			allBogus, nonBogus := filterBogus(res.Answer)

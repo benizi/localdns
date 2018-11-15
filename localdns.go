@@ -611,8 +611,10 @@ func setupDebug() {
 	env := os.Getenv("DEBUG")
 	if n, err := strconv.Atoi(env); err == nil {
 		debug = debugging(n)
+		debug.Debugf(2, "Debug level %v from env", debug)
 	} else if env != "" {
 		debug = 1
+		debug.Debugf(2, "Debug level %v from env != \"\"", debug)
 	}
 }
 

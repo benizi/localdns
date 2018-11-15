@@ -570,6 +570,13 @@ func forward(w dns.ResponseWriter, req *dns.Msg) {
 	for _, server := range servers {
 		debug.Debugf(2, "forward : server : %s", server)
 		res, _, err := client.Exchange(req, server)
+		switch res.Rcode {
+		case dns.RcodeServerFailure:
+			debug.Printf(" <- SERVFAIL (Rcode %v, err %v)", res.Rcode, err)
+		case dns.RcodeSuccess:
+		default:
+			debug.Debugf(2, " <- Rcode = %v (err = %v)", res.Rcode, err)
+		}
 		if err == nil {
 			allBogus, nonBogus := filterBogus(res.Answer)
 			res.Answer = nonBogus

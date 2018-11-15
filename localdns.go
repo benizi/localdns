@@ -219,6 +219,8 @@ func findMyIP() (ips []net.IP) {
 
 type answeradder func(*dns.Msg, string, net.IP)
 
+var defaultAnswerAdder answeradder = addAnswer
+
 // If the IP is representable as IPv4, add an `A` record. Otherwise, if it is
 // representable as IPv6, add an `AAAA` record.
 func addAnswer(msg *dns.Msg, name string, ip net.IP) {
@@ -238,6 +240,14 @@ func addAnswerOnly4(msg *dns.Msg, name string, ip net.IP) {
 		appendRR(msg, aRecord(name, ip))
 	} else {
 		debug.Printf(" !IPv4: %s -> %v\n", name, ip)
+	}
+}
+
+func addAnswerOnly6(msg *dns.Msg, name string, ip net.IP) {
+	if ip.To16() != nil {
+		appendRR(msg, aaaaRecord(name, ip))
+	} else {
+		debug.Printf(" !IPv6: %s -> %v\n", name, ip)
 	}
 }
 
@@ -283,7 +293,7 @@ func selfAddressed(w dns.ResponseWriter, req *dns.Msg) {
 	m.SetReply(req)
 
 	for _, ip := range findMyIP() {
-		addAnswer(m, req.Question[0].Name, ip)
+		defaultAnswerAdder(m, req.Question[0].Name, ip)
 	}
 
 	w.WriteMsg(m)
@@ -321,7 +331,7 @@ func ifaddr(adder answeradder, ifnames ...string) responder {
 func loopback(w dns.ResponseWriter, req *dns.Msg) {
 	m := new(dns.Msg)
 	m.SetReply(req)
-	addAnswer(m, req.Question[0].Name, net.ParseIP("127.0.0.1"))
+	defaultAnswerAdder(m, req.Question[0].Name, net.ParseIP("127.0.0.1"))
 	w.WriteMsg(m)
 }
 
@@ -428,7 +438,7 @@ func dockerList(w dns.ResponseWriter, req *dns.Msg, strip int) {
 				var ip net.IP
 				ip, _, err = net.ParseCIDR(addr)
 				if err == nil {
-					addAnswer(m, name, ip)
+					defaultAnswerAdder(m, name, ip)
 				}
 			}
 		}
@@ -456,7 +466,7 @@ func dockerResolve(w dns.ResponseWriter, req *dns.Msg) {
 			if info.State.Status == "" || info.State.Running {
 				addr := info.NetworkSettings.IPAddress
 				if addr != "" {
-					addAnswer(m, req.Question[0].Name, net.ParseIP(addr))
+					defaultAnswerAdder(m, req.Question[0].Name, net.ParseIP(addr))
 				}
 			}
 		} else {
@@ -618,6 +628,20 @@ func setupDebug() {
 	}
 }
 
+func setup4vs6() {
+	switch os.Getenv("IPV") {
+	case "4":
+		debug.Printf("Only returning IPv4 (A) records by default")
+		defaultAnswerAdder = addAnswerOnly4
+	case "6":
+		debug.Printf("Only returning IPv6 (AAAA) records by default")
+		defaultAnswerAdder = addAnswerOnly6
+	default:
+		debug.Debugf(2, "Returning both IPv4 (A) and IPv6 (AAAA) records by default")
+		defaultAnswerAdder = addAnswer
+	}
+}
+
 func setupCnames() {
 	cnames := strings.Split(os.Getenv("CNAMES"), ",")
 	for _, item := range cnames {
@@ -672,7 +696,7 @@ func setupIface() {
 		}
 		dmatch := dotted(parts[0])
 		ifnames := []string{}
-		adder := addAnswer
+		adder := defaultAnswerAdder
 		for _, ifname := range parts[1:] {
 			if ifname == "4" || ifname == "only4" {
 				adder = addAnswerOnly4
@@ -738,6 +762,7 @@ func main() {
 	}
 
 	setupDebug()
+	setup4vs6()
 	setupCnames()
 	setupCnameMap()
 	setupSelf()

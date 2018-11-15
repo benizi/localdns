@@ -49,7 +49,7 @@ func resolveA(name, proto string) (answers []dns.RR) {
 		debug.Debugf(2, "resolveA : q : %#+v", q)
 		res, _, err := client.Exchange(q, server)
 		if err == nil {
-			answers = append(answers, res.Answer...)
+			answers = appendFiltered(answers, res.Answer...)
 		}
 	}
 	return answers
@@ -249,6 +249,44 @@ func addAnswerOnly6(msg *dns.Msg, name string, ip net.IP) {
 	} else {
 		debug.Printf(" !IPv6: %s -> %v\n", name, ip)
 	}
+}
+
+type answerfilter func(dns.RR) bool
+
+var defaultAnswerFilter answerfilter = allowVersions(4, 6)
+
+func allowVersions(versions ...int) answerfilter {
+	allow4 := false
+	allow6 := false
+	for _, v := range versions {
+		switch v {
+		case 4:
+			allow4 = true
+		case 6:
+			allow6 = true
+		default:
+			log.Fatalf("Unhandled IP version specified: %s", v)
+		}
+	}
+	return func(rr dns.RR) bool {
+		switch rr.(type) {
+		case *dns.A:
+			return allow4
+		case *dns.AAAA:
+			return allow6
+		default:
+			return true
+		}
+	}
+}
+
+func appendFiltered(answers []dns.RR, rrs ...dns.RR) []dns.RR {
+	for _, a := range rrs {
+		if defaultAnswerFilter(a) {
+			answers = append(answers, a)
+		}
+	}
+	return answers
 }
 
 func rrHeader(name string, rtype uint16, ttl uint32) dns.RR_Header {
@@ -589,8 +627,18 @@ func forward(w dns.ResponseWriter, req *dns.Msg) {
 		}
 		if err == nil {
 			allBogus, nonBogus := filterBogus(res.Answer)
-			res.Answer = nonBogus
-			if allBogus {
+			res.Answer = appendFiltered([]dns.RR{}, nonBogus...)
+			allFiltered := len(res.Answer) == 0
+			if allBogus || allFiltered {
+				var reject []string
+				if allBogus {
+					reject = append(reject, "bogus")
+				}
+				if allFiltered {
+					reject = append(reject, "filtered")
+				}
+				reason := strings.Join(reject, " and ")
+				debug.Printf("A from [%s] all %s", server, reason)
 				res.SetRcode(req, dns.RcodeNameError)
 			}
 			for _, rr := range res.Answer {
@@ -633,12 +681,15 @@ func setup4vs6() {
 	case "4":
 		debug.Printf("Only returning IPv4 (A) records by default")
 		defaultAnswerAdder = addAnswerOnly4
+		defaultAnswerFilter = allowVersions(4)
 	case "6":
 		debug.Printf("Only returning IPv6 (AAAA) records by default")
 		defaultAnswerAdder = addAnswerOnly6
+		defaultAnswerFilter = allowVersions(6)
 	default:
 		debug.Debugf(2, "Returning both IPv4 (A) and IPv6 (AAAA) records by default")
 		defaultAnswerAdder = addAnswer
+		defaultAnswerFilter = allowVersions(4, 6)
 	}
 }
 

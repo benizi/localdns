@@ -223,8 +223,10 @@ type answeradder func(*dns.Msg, string, net.IP)
 // representable as IPv6, add an `AAAA` record.
 func addAnswer(msg *dns.Msg, name string, ip net.IP) {
 	if ip.To4() != nil {
+		debug.Debugf(2, "addAnswer : %s -> A[%s]", name, ip)
 		appendRR(msg, aRecord(name, ip))
 	} else if ip.To16() != nil {
+		debug.Debugf(2, "addAnswer : %s -> AAAA[%s]", name, ip)
 		appendRR(msg, aaaaRecord(name, ip))
 	} else {
 		debug.Printf(" !(IPv4 || IPv6): %s -> %v\n", name, ip)
@@ -573,6 +575,18 @@ func forward(w dns.ResponseWriter, req *dns.Msg) {
 			res.Answer = nonBogus
 			if allBogus {
 				res.SetRcode(req, dns.RcodeNameError)
+			}
+			for _, rr := range res.Answer {
+				var dbgOut string
+				switch t := rr.(type) {
+				case *dns.A:
+					dbgOut = fmt.Sprintf("A[%s]", t.A)
+				case *dns.AAAA:
+					dbgOut = fmt.Sprintf("AAAA[%s]", t.AAAA)
+				default:
+					dbgOut = fmt.Sprintf("%v", rr)
+				}
+				debug.Printf("from [%s] : %s", server, dbgOut)
 			}
 			w.WriteMsg(res)
 			return

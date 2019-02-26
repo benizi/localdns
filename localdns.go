@@ -810,11 +810,20 @@ const (
 `
 )
 
-func dockerWebSection(w http.ResponseWriter, name string, index multiset) {
+func dockerWebSection(w http.ResponseWriter, name, path string, index multiset) {
 	label := strings.ToLower(name)
 	fmt.Fprintf(w, "<h2>By %s</h2>\n<div>\n", name)
 	for _, n := range sortuniq(index.keys()) {
-		fmt.Fprintf(w, "<div id=\"%s-%s\">%s</div>\n<blockquote>\n", label, n, n)
+		fmt.Fprintf(w, "<div id=\"%s-%s\">", label, n)
+		var link string
+		if path != "" {
+			link = fmt.Sprintf("<a href=\"%s/%s\">%s</a>", path, n, n)
+		} else {
+			link = n
+		}
+		io.WriteString(w, link)
+		io.WriteString(w, "</div>\n")
+		io.WriteString(w, "<blockquote>\n")
 		for _, id := range sortuniq(index[n].values()) {
 			fmt.Fprintf(w, "%s<br>\n", id)
 		}
@@ -826,23 +835,18 @@ func dockerWebSection(w http.ResponseWriter, name string, index multiset) {
 func handleDockerWeb(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, header)
 
-	dockerWebSection(w, "Name", containerByName)
-	dockerWebSection(w, "Network", containerByNetwork)
-	dockerWebSection(w, "IP", containerByIP)
+	dockerWebSection(w, "Name", "", containerByName)
+	dockerWebSection(w, "Network", "", containerByNetwork)
+	dockerWebSection(w, "IP", "", containerByIP)
 
-	var ids []string
-	for k, _ := range containerInfo {
-		ids = append(ids, k)
-	}
-	ids = sortuniq(ids)
-	for _, id := range ids {
-		fmt.Fprintf(w, "<div id=\"container-%s\">%s</div>\n<blockquote>\n", id, id)
+	namesByID := multiset{}
+	for id, _ := range containerInfo {
 		for _, n := range containerInfo[id].names {
-			fmt.Fprintf(w, "%s<br>\n", n)
+			namesByID.add(id, n)
 		}
-		io.WriteString(w, "</blockquote>\n")
 	}
-	io.WriteString(w, "</div>\n")
+
+	dockerWebSection(w, "Container", "/c", namesByID)
 	io.WriteString(w, footer)
 }
 

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/miekg/dns"
+	"io"
 	"io/ioutil"
 	"log"
 	"math/rand"
@@ -723,6 +724,7 @@ func dockerEventListener(restart chan bool) (chan dockerevent, error) {
 func initDocker() {
 	go listenDocker()
 	go preloadDocker()
+	go serveDockerWeb()
 }
 
 func listenDocker() {
@@ -775,6 +777,88 @@ func preloadDocker() {
 	}()
 	wg.Wait()
 	cmd.Wait()
+}
+
+func serveDockerWeb() {
+	host, port, err := net.SplitHostPort(os.Getenv("DOCKERHTTP"))
+	if err != nil {
+		return
+	}
+	http.HandleFunc("/c/", handleDockerWebContainer)
+	http.HandleFunc("/", handleDockerWeb)
+	go func() {
+		addr := net.JoinHostPort(host, port)
+		err = http.ListenAndServe(addr, nil)
+		if err != nil {
+			log.Printf("Error serving Docker web at %s: %v", addr, err)
+		}
+	}()
+}
+
+const (
+	header = `<!DOCTYPE html>
+<head>
+<title>Docker info</title>
+</head>
+<body>
+<h1>Docker info</h1>
+<div id="info">
+`
+	footer = `</div>
+</body>
+</html>
+`
+)
+
+func dockerWebSection(w http.ResponseWriter, name string, index multiset) {
+	label := strings.ToLower(name)
+	fmt.Fprintf(w, "<h2>By %s</h2>\n<div>\n", name)
+	for _, n := range sortuniq(index.keys()) {
+		fmt.Fprintf(w, "<div id=\"%s-%s\">%s</div>\n<blockquote>\n", label, n, n)
+		for _, id := range sortuniq(index[n].values()) {
+			fmt.Fprintf(w, "%s<br>\n", id)
+		}
+		io.WriteString(w, "</blockquote>\n")
+	}
+	io.WriteString(w, "</div>\n")
+}
+
+func handleDockerWeb(w http.ResponseWriter, r *http.Request) {
+	io.WriteString(w, header)
+
+	dockerWebSection(w, "Name", containerByName)
+	dockerWebSection(w, "Network", containerByNetwork)
+	dockerWebSection(w, "IP", containerByIP)
+
+	var ids []string
+	for k, _ := range containerInfo {
+		ids = append(ids, k)
+	}
+	ids = sortuniq(ids)
+	for _, id := range ids {
+		fmt.Fprintf(w, "<div id=\"container-%s\">%s</div>\n<blockquote>\n", id, id)
+		for _, n := range containerInfo[id].names {
+			fmt.Fprintf(w, "%s<br>\n", n)
+		}
+		io.WriteString(w, "</blockquote>\n")
+	}
+	io.WriteString(w, "</div>\n")
+	io.WriteString(w, footer)
+}
+
+func handleDockerWebContainer(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/c/")
+	container, err := dockerGetContainer(id)
+	if err != nil {
+		fmt.Fprintf(w, "Failed to find container %s: %v\n", id, err)
+		return
+	}
+	b, err := json.MarshalIndent(container, "", "  ")
+	if err != nil {
+		fmt.Fprintf(w, "Failed to print container %s: %v\n", id, err)
+		return
+	}
+	w.Write(b)
 }
 
 type ipaddr net.IP

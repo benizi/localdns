@@ -66,7 +66,7 @@ func initBogus() {
 		}
 	}
 
-	appendBogusFromRandomSearch()
+	go appendBogusFromRandomSearch()
 }
 
 func appendBogusFromRandomSearch() {

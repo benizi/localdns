@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,8 +12,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -386,7 +390,9 @@ type dockerNetworkHost struct {
 
 type dockerContainer struct {
 	Id              string
+	Name            string
 	State           dockerStatus
+	Config          dockerContainerConfig
 	NetworkSettings dockerContainerNetworkSettings
 }
 
@@ -395,8 +401,25 @@ type dockerStatus struct {
 	Running bool
 }
 
+type dockerContainerConfig struct {
+	Hostname string
+}
+
+func (c dockerContainer) shortName() string {
+	parts := strings.Split(c.Name, "/")
+	if len(parts) == 2 && parts[0] == "" {
+		return parts[1]
+	}
+	return ""
+}
+
 type dockerContainerNetworkSettings struct {
-	// TODO: I only use one, scalar field. Any way to un-nest this?
+	IPAddress string
+	Networks  map[string]dockerContainerNetwork
+}
+
+type dockerContainerNetwork struct {
+	Aliases   []string
 	IPAddress string
 }
 
@@ -489,26 +512,33 @@ func dockerResolve(w dns.ResponseWriter, req *dns.Msg) {
 	m.SetReply(req)
 	labels := dns.SplitDomainName(req.Question[0].Name)
 	host, tld := "", ""
+	var hostparts []string
 	isDocker := false
-	for i, label := range labels {
-		host = label
+	for i, _ := range labels {
 		tld = strings.Join(labels[i+1:], ".")
-		if isDockerTLD[dotted(tld)] {
-			isDocker = true
-			break
+		if !isDockerTLD[dotted(tld)] {
+			continue
 		}
+		isDocker = true
+		hostparts = labels[:i+1]
+		break
 	}
 	if isDocker {
-		info, err := dockerGetContainer(host)
-		if err == nil {
-			if info.State.Status == "" || info.State.Running {
-				addr := info.NetworkSettings.IPAddress
-				if addr != "" {
-					defaultAnswerAdder(m, req.Question[0].Name, net.ParseIP(addr))
+		for i := len(hostparts) - 1; i >= 0; i-- {
+			host = strings.Join(hostparts[i:], ".")
+			ids, found := containerByName.get(host)
+			if !found {
+				continue
+			}
+			for _, id := range ids {
+				if entry, ok := containerInfo[id]; ok {
+					for _, addr := range entry.addrs {
+						ip := net.IP(addr)
+						defaultAnswerAdder(m, req.Question[0].Name, ip)
+					}
 				}
 			}
-		} else {
-			debug.Printf("dockerGetContainer(%s): %v", host, err)
+			break
 		}
 	}
 	w.WriteMsg(m)
@@ -530,6 +560,417 @@ func docker(w dns.ResponseWriter, req *dns.Msg) {
 	} else {
 		dockerResolve(w, req)
 	}
+}
+
+type eventaction string
+
+const (
+	Connect    eventaction = "connect"
+	Disconnect             = "disconnect"
+)
+
+type eventactor struct {
+	ID         string
+	Attributes map[string]string
+}
+
+type dockerevent struct {
+	Action eventaction
+	Actor  eventactor
+	object map[string]interface{}
+	raw    string
+}
+
+func dockerEventListener(restart chan bool) (chan dockerevent, error) {
+	events := make(chan dockerevent, 1)
+	args := []string{
+		"events",
+		"--format={{json .}}",
+		"--filter=type=network",
+		"--filter=event=connect",
+		"--filter=event=disconnect",
+	}
+	cmd := exec.Command("docker", args...)
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("Couldn't StdoutPipe: %v", err)
+	}
+	err = cmd.Start()
+	if err != nil {
+		return nil, fmt.Errorf("Couldn't run docker events: %s", err)
+	}
+	decoder := json.NewDecoder(out)
+	go func() {
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				var evt dockerevent
+				err := decoder.Decode(&evt.object)
+				if err != nil {
+					log.Fatalf("ERR: %#+v", err)
+					break
+				}
+				debug.Debugf(2, "Incoming event: %#+v", evt)
+				debug.Debugf(2, "Incoming event as JSON:\n%s", asJSON(evt.object))
+				reJSONed, err := json.Marshal(evt.object)
+				if err != nil {
+					log.Fatalf("ERR: %#+v", err)
+					break
+				}
+				err = json.NewDecoder(bytes.NewReader(reJSONed)).Decode(&evt)
+				if err != nil {
+					log.Fatalf("ERR: %#+v", err)
+					break
+				}
+				debug.Printf("Specific event: %#+v", evt)
+				events <- evt
+			}
+		}()
+		wg.Wait()
+		log.Print("cmd.Wait()")
+		cmd.Wait()
+		restart <- true
+	}()
+	return events, nil
+}
+
+func initDocker() {
+	go listenDocker()
+}
+
+func listenDocker() {
+	var events chan dockerevent
+	restart := make(chan bool, 1)
+	go func() {
+		restart <- true
+	}()
+	for {
+		select {
+		case _, ok := <-restart:
+			debug.Printf("listenDocker <-restart")
+			if !ok {
+				log.Fatal("<-restart was closed")
+			}
+			listener, err := dockerEventListener(restart)
+			if err == nil {
+				events = listener
+			}
+		case e, ok := <-events:
+			debug.Printf("listenDocker <-events")
+			if !ok {
+				log.Fatal("<-events was closed")
+			}
+			processDockerEvent(e)
+		}
+	}
+}
+
+type ipaddr net.IP
+
+func (ip ipaddr) MarshalJSON() ([]byte, error) {
+	if ip == nil {
+		return []byte("null"), nil
+	}
+	return json.Marshal(ip.String())
+}
+
+func (ip ipaddr) String() string {
+	return net.IP(ip).String()
+}
+
+type dockeripinfo struct {
+	names    []string
+	networks []string
+	addrs    []ipaddr
+}
+
+func (entry dockeripinfo) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]interface{}{
+		"names":    entry.names,
+		"networks": entry.networks,
+		"addrs":    entry.addrs,
+	})
+}
+
+func (entry *dockeripinfo) addname(parts ...string) {
+	var out []string
+	for _, part := range parts {
+		name := minimized(part)
+		if name == "" {
+			return
+		}
+		out = append(out, name)
+	}
+	if len(out) > 0 {
+		entry.names = append(entry.names, strings.Join(out, "."))
+	}
+}
+
+func (entry *dockeripinfo) addnetwork(network string) {
+	entry.networks = append(entry.networks, network)
+}
+
+func (entry *dockeripinfo) addip(addr string) bool {
+	ip := net.ParseIP(addr)
+	ok := ip != nil
+	if ok {
+		entry.addrs = append(entry.addrs, ipaddr(ip))
+	}
+	return ok
+}
+
+func (entry dockeripinfo) add(id string) {
+	if len(entry.names) == 0 || len(entry.addrs) == 0 {
+		return
+	}
+	entry.set(true, id)
+}
+
+func (entry dockeripinfo) remove(id string) {
+	entry.set(false, id)
+}
+
+func (entry dockeripinfo) set(add bool, id string) {
+	if add {
+		entry.dedup()
+		containerInfo[id] = entry
+	} else {
+		delete(containerInfo, id)
+	}
+
+	for _, n := range entry.names {
+		containerByName.set(add, n, id)
+	}
+	for _, n := range entry.networks {
+		containerByNetwork.set(add, n, id)
+	}
+	for _, addr := range entry.addrs {
+		containerByIP.set(add, addr.String(), id)
+	}
+}
+
+func (entry dockeripinfo) dedup() {
+	entry.names = uniq(entry.names)
+	entry.networks = uniq(entry.networks)
+	entry.addrs = uniqipaddrs(entry.addrs)
+}
+
+type multiset map[string]set
+
+type set map[string]empty
+
+func (s set) add(i string) {
+	s[i] = empty{}
+}
+
+func (s set) remove(i string) {
+	delete(s, i)
+}
+
+func (s set) contains(i string) bool {
+	_, ok := s[i]
+	return ok
+}
+
+func (s set) values() []string {
+	var vs []string
+	for v, _ := range s {
+		vs = append(vs, v)
+	}
+	return vs
+}
+
+func uniqipaddrs(ips []ipaddr) []ipaddr {
+	var list []ipaddr
+	seen := set{}
+	for _, ip := range ips {
+		if !seen.contains(ip.String()) {
+			list = append(list, ip)
+			seen.add(ip.String())
+		}
+	}
+	return list
+}
+
+func uniq(items []string) []string {
+	var list []string
+	seen := set{}
+	for _, s := range items {
+		if !seen.contains(s) {
+			list = append(list, s)
+			seen.add(s)
+		}
+	}
+	return list
+}
+
+func sortuniq(items []string) []string {
+	ret := uniq(items)
+	sort.Strings(ret)
+	return ret
+}
+
+type empty struct{}
+
+func (e empty) MarshalJSON() ([]byte, error) {
+	return []byte{'1'}, nil
+}
+
+func (m multiset) add(k, v string) {
+	if _, ok := m[k]; !ok {
+		m[k] = set{}
+	}
+	m[k][v] = empty{}
+}
+
+func (m multiset) remove(k, v string) {
+	s, ok := m[k]
+	if !ok {
+		return
+	}
+	delete(s, v)
+	if len(s) == 0 {
+		delete(m, k)
+	}
+}
+
+func (m multiset) set(add bool, k, v string) {
+	if add {
+		m.add(k, v)
+	} else {
+		m.remove(k, v)
+	}
+}
+
+func (m multiset) get(k string) ([]string, bool) {
+	var items []string
+	s, found := m[k]
+	if found {
+		for item, _ := range s {
+			items = append(items, item)
+		}
+	}
+	return items, found
+}
+
+func (m multiset) contains(k, v string) bool {
+	if s, ok := m[k]; ok {
+		_, okv := s[v]
+		return okv
+	}
+	return false
+}
+
+func (m multiset) keys() []string {
+	var ks []string
+	for k, _ := range m {
+		ks = append(ks, k)
+	}
+	return ks
+}
+
+var (
+	containerMutex     = &sync.Mutex{}
+	containerInfo      = map[string]dockeripinfo{}
+	containerByIP      = multiset{}
+	containerByName    = multiset{}
+	containerByNetwork = multiset{}
+	kebabCase          = strings.NewReplacer("_", "-")
+)
+
+func withoutDefault(s string) string {
+	return strings.TrimSuffix(s, "_default")
+}
+
+func kebabCased(s string) string {
+	return kebabCase.Replace(s)
+}
+
+func minimized(name string) string {
+	return kebabCased(withoutDefault(name))
+}
+
+func asJSON(val interface{}) string {
+	b, err := json.MarshalIndent(val, "", "  ")
+	if err == nil {
+		return string(b)
+	}
+	return "ERR: " + err.Error()
+}
+
+func processDockerEvent(e dockerevent) {
+	var add bool
+	switch e.Action {
+	case Connect:
+		add = true
+	case Disconnect:
+		add = false
+	default:
+		log.Printf("Unexpected event action: %s", e.Action)
+		return
+	}
+	id, ok := e.Actor.Attributes["container"]
+	if !ok {
+		log.Printf("network.%s event with no container attribute?", e.Action)
+		return
+	}
+	if add {
+		addContainerMappings(id)
+	} else {
+		clearContainerMappings(id)
+	}
+}
+
+func addContainerMappings(id string) {
+	containerMutex.Lock()
+	defer containerMutex.Unlock()
+	container, err := dockerGetContainer(id)
+	if err != nil {
+		log.Printf("Error reading container %s info: %s\n", id, err)
+		return
+	}
+	var entry dockeripinfo
+	autogenerated := func(n string) bool {
+		return len(n) >= 8 && strings.HasPrefix(id, n)
+	}
+	addname := func(parts ...string) {
+		if len(parts) > 0 && !autogenerated(parts[0]) {
+			entry.addname(parts...)
+		}
+	}
+	addNetworkName := func(fullname, fullnetwork string) {
+		name := minimized(fullname)
+		network := minimized(fullnetwork)
+		addname(name)
+		addname(name, network)
+		entry.addnetwork(network)
+	}
+	addname(container.shortName())
+	addname(container.Config.Hostname)
+	entry.addip(container.NetworkSettings.IPAddress)
+	for network, settings := range container.NetworkSettings.Networks {
+		entry.addip(settings.IPAddress)
+		if settings.Aliases != nil {
+			for _, alias := range settings.Aliases {
+				if !autogenerated(alias) {
+					addNetworkName(alias, network)
+				}
+			}
+		}
+	}
+	entry.add(id)
+}
+
+func clearContainerMappings(id string) {
+	containerMutex.Lock()
+	defer containerMutex.Unlock()
+	entry, ok := containerInfo[id]
+	if !ok {
+		return
+	}
+	entry.remove(id)
 }
 
 func serveDNS(proto string, addr string) {
@@ -776,13 +1217,18 @@ func setupLoop() {
 }
 
 func setupDocker() {
+	any := false
 	for _, tld := range strings.Split(os.Getenv("DOCKER"), ",") {
 		if tld == "" {
 			continue
 		}
+		any = true
 		log.Printf("Serving Docker hosts on .%s", dotted(tld))
 		dns.HandleFunc(dotted(tld), docker)
 		isDockerTLD[dotted(tld)] = true
+	}
+	if any {
+		go initDocker()
 	}
 }
 

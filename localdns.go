@@ -652,6 +652,15 @@ func docker(w dns.ResponseWriter, req *dns.Msg) {
 	}
 }
 
+/*
+type eventtype string
+
+const (
+	Network   eventtype = "network"
+	Container           = "container"
+)
+*/
+
 type eventaction string
 
 const (
@@ -659,12 +668,22 @@ const (
 	Disconnect             = "disconnect"
 )
 
+/*
+	Attach     eventaction = "attach"
+	Create                 = "create"
+	Destroy                = "destroy"
+	Die                    = "die"
+	Kill                   = "kill"
+	Start                  = "start"
+*/
+
 type eventactor struct {
 	ID         string
 	Attributes map[string]string
 }
 
 type dockerevent struct {
+	// Type   eventtype
 	Action eventaction
 	Actor  eventactor
 	object map[string]interface{}

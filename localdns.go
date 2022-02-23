@@ -287,9 +287,14 @@ func allowVersions(versions ...int) answerfilter {
 }
 
 func appendFiltered(answers []dns.RR, rrs ...dns.RR) []dns.RR {
+	seen := map[dns.RR]bool{}
+	for _, a := range answers {
+		seen[a] = true
+	}
 	for _, a := range rrs {
-		if defaultAnswerFilter(a) {
+		if defaultAnswerFilter(a) && !seen[a] {
 			answers = append(answers, a)
+			seen[a] = true
 		}
 	}
 	return answers
@@ -902,7 +907,17 @@ func (entry *dockeripinfo) addname(parts ...string) {
 		out = append(out, name)
 	}
 	if len(out) > 0 {
-		entry.names = append(entry.names, strings.Join(out, "."))
+		name := strings.Join(out, ".")
+		seen := false
+		for _, n := range entry.names {
+			if n == name {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			entry.names = append(entry.names, name)
+		}
 	}
 }
 
@@ -913,6 +928,14 @@ func (entry *dockeripinfo) addnetwork(network string) {
 func (entry *dockeripinfo) addip(addr string) bool {
 	ip := net.ParseIP(addr)
 	ok := ip != nil
+	if ok {
+		for _, addr := range entry.addrs {
+			if addr.String() == ip.String() {
+				ok = false
+				break
+			}
+		}
+	}
 	if ok {
 		entry.addrs = append(entry.addrs, ipaddr(ip))
 	}

@@ -727,28 +727,37 @@ func dockerReverse(w dns.ResponseWriter, req *dns.Msg, labels []string) {
 
 	name := ""
 	any := false
-	var minp, minlen int
+	var maxp, minlen int
 	for _, cid := range cids {
 		info, found := containerInfo[cid]
 		if !found {
 			continue
 		}
 		for _, n := range info.names {
+			if strings.HasPrefix(n, "*.") {
+				continue
+			}
 			parts := dns.SplitDomainName(n)
 			switch {
 			case !any:
 				any = true
-				minp = len(parts)
+				maxp = len(parts)
 				minlen = len(n)
 				name = n
-			case len(parts) < minp || (len(parts) == minp && len(n) < minlen):
+			case len(parts) > maxp || (len(parts) == maxp && len(n) < minlen):
 				minlen = len(n)
 				name = n
 			}
 		}
 	}
 	if any {
-		ptr := ptrRecord(req.Question[0].Name, dotted(name))
+		var full string
+		// FIXME: store "preferred" Docker TLD somewhere
+		for tld, _ := range isDockerTLD {
+			full = dotted(name) + tld
+			break
+		}
+		ptr := ptrRecord(req.Question[0].Name, dotted(full))
 		appendRR(m, ptr)
 	}
 

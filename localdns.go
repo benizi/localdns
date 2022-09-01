@@ -144,6 +144,10 @@ func cnameResponder(mapper func(string) string) responder {
 
 		m := new(dns.Msg)
 		m.SetReply(req)
+		if req.RecursionDesired {
+			m.RecursionDesired = false
+			m.RecursionAvailable = true
+		}
 
 		r := new(dns.CNAME)
 		r.Hdr = dns.RR_Header{
@@ -426,6 +430,8 @@ type dockerComposeInfo struct {
 	Oneoff  dockerComposeBoolean `json:"com.docker.compose.oneoff"`
 	Project string               `json:"com.docker.compose.project"`
 	Service string               `json:"com.docker.compose.service"`
+	Bare    dockerComposeBoolean `json:"com.benizi.localdns.bare"`
+	Wilds   dockerComposeNumber  `json:"com.benizi.localdns.wildcards"`
 }
 
 type dockerComposeNumber int
@@ -531,6 +537,8 @@ func (d *dockerDialer) DialContext(ctx context.Context, network, addr string) (n
 }
 
 var isDockerTLD = map[string]bool{}
+var bareCompose = map[string]bool{}
+var skipComposeDetails = map[string]map[string]bool{}
 
 func dockerAPI(path string) ([]byte, error) {
 	onlyDocker := (&dockerDialer{"/var/run/docker.sock"}).DialContext
@@ -556,6 +564,17 @@ func dockerGetContainer(name string) (container dockerContainer, err error) {
 	return container, err
 }
 
+func skipService(comp dockerComposeInfo) bool {
+	for _, network := range []string{comp.Project, "*"} {
+		if skips, ok := skipComposeDetails[network]; ok {
+			if skips[comp.Service] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func dockerGetAll() (hosts []dockerNetworkHost, err error) {
 	// To list all: get network names, then containers per-network
 	var networks []dockerNetwork
@@ -563,6 +582,7 @@ func dockerGetAll() (hosts []dockerNetworkHost, err error) {
 	body, err = dockerAPI("/networks")
 	if err == nil {
 		if err = json.Unmarshal(body, &networks); err == nil {
+			debug.Debugf(2, "dockerAPI(/networks): %#+v", networks)
 			for _, network := range networks {
 				body, err = dockerAPI(fmt.Sprintf("/networks/%s", network.Name))
 				if err != nil {
@@ -572,6 +592,7 @@ func dockerGetAll() (hosts []dockerNetworkHost, err error) {
 				if err = json.Unmarshal(body, &network); err != nil {
 					break
 				}
+				debug.Debugf(2, "dockerAPI(/networks/%s): %s", network.Name, network)
 				for _, host := range network.Containers {
 					hosts = append(hosts, host)
 				}
@@ -621,17 +642,23 @@ func dockerResolve(w dns.ResponseWriter, req *dns.Msg) {
 		break
 	}
 	if isDocker {
-		for i := len(hostparts) - 1; i >= 0; i-- {
-			host = strings.Join(hostparts[i:], ".")
+		for i := 0; i < len(hostparts); i++ {
+			host = strings.Join(hostparts, ".")
+			hostparts[i] = "*"
 			ids, found := containerByName.get(host)
 			if !found {
 				continue
 			}
+			seen := map[string]bool{}
 			for _, id := range ids {
 				if entry, ok := containerInfo[id]; ok {
 					for _, addr := range entry.addrs {
 						ip := net.IP(addr)
-						defaultAnswerAdder(m, req.Question[0].Name, ip)
+						key := ip.String()
+						if !seen[key] {
+							defaultAnswerAdder(m, req.Question[0].Name, ip)
+						}
+						seen[key] = true
 					}
 				}
 			}
@@ -771,6 +798,7 @@ func dockerEventListener(restart chan bool) (chan dockerevent, error) {
 	args := []string{
 		"events",
 		"--format={{json .}}",
+		//"--filter=type=container",
 		"--filter=type=network",
 		"--filter=event=connect",
 		"--filter=event=disconnect",
@@ -800,6 +828,7 @@ func dockerEventListener(restart chan bool) (chan dockerevent, error) {
 				debug.Debugf(2, "Incoming event: %#+v", evt)
 				debug.Debugf(2, "Incoming event as JSON:\n%s", asJSON(evt.object))
 				reJSONed, err := json.Marshal(evt.object)
+				//evt.raw = string(reJSONed)
 				if err != nil {
 					log.Fatalf("ERR: %#+v", err)
 					break
@@ -1065,6 +1094,14 @@ func (entry dockeripinfo) set(add bool, id string) {
 	for _, addr := range entry.addrs {
 		containerByIP.set(add, addr.String(), id)
 	}
+	/*
+		log.Printf("By container ID:\n%s", asJSON(containerInfo))
+		log.Printf("Mappings:\n%s", asJSON(map[string]multiset{
+			"containerByIP":      containerByIP,
+			"containerByName":    containerByName,
+			"containerByNetwork": containerByNetwork,
+		}))
+	*/
 }
 
 func (entry dockeripinfo) dedup() {
@@ -1216,6 +1253,18 @@ func asJSON(val interface{}) string {
 	return "ERR: " + err.Error()
 }
 
+/*
+func processDockerEvent(e dockerevent) {
+	debug.Printf("Got event:\n  %#+v\n", e)
+	switch e.Type {
+	case Network:
+		processDockerNetworkEvent(e)
+	case Container:
+		processDockerContainerEvent(e)
+	}
+}
+*/
+
 func processDockerEvent(e dockerevent) {
 	var add bool
 	switch e.Action {
@@ -1224,6 +1273,7 @@ func processDockerEvent(e dockerevent) {
 	case Disconnect:
 		add = false
 	default:
+		//log.Printf("Unexpected network action: %s", e.Action)
 		log.Printf("Unexpected event action: %s", e.Action)
 		return
 	}
@@ -1247,44 +1297,79 @@ func addContainerMappings(id string) {
 		log.Printf("Error reading container %s info: %s\n", id, err)
 		return
 	}
+	/*
+		c, _ := dockerAPI(fmt.Sprintf("/containers/%s/json", id))
+		var rawc map[string]interface{}
+		err = json.Unmarshal(c, &rawc)
+		if err == nil {
+			log.Printf("RAW JSON FOR CONTAINER %s\n%s", id, asJSON(rawc))
+		}
+	*/
 	var entry dockeripinfo
 	autogenerated := func(n string) bool {
 		return len(n) >= 8 && strings.HasPrefix(id, n)
 	}
-	addname := func(parts ...string) {
-		if len(parts) > 0 && !autogenerated(parts[0]) {
+	addname := func(wild int, parts ...string) {
+		if len(parts) == 0 || autogenerated(parts[0]) {
+			return
+		}
+		for i := 0; i <= wild; i++ {
 			entry.addname(parts...)
+			parts = append([]string{"*"}, parts...)
 		}
 	}
-	addNetworkName := func(fullname, fullnetwork string) {
+	addNetworkName := func(wild int, fullname, fullnetwork string) {
 		name := minimized(fullname)
 		network := minimized(fullnetwork)
-		addname(name)
-		addname(name, network)
+		addname(wild, name, network)
 		entry.addnetwork(network)
 	}
-	addname(container.shortName())
-	addname(container.Config.Hostname)
+	wilds := int(container.Config.Compose.Wilds)
+	if container.isComposed() && !skipService(container.Config.Compose) {
+		addname(wilds, container.shortName())
+		addname(wilds, container.Config.Hostname)
+	}
 	entry.addip(container.NetworkSettings.IPAddress)
 	for network, settings := range container.NetworkSettings.Networks {
 		entry.addip(settings.IPAddress)
 		if settings.Aliases != nil {
 			for _, alias := range settings.Aliases {
-				if !autogenerated(alias) {
-					addNetworkName(alias, network)
+				if autogenerated(alias) {
+					continue
+				}
+				addNetworkName(1, alias, network)
+				addBare := false
+				if bareCompose[network] {
+					addBare = true
+				}
+				if container.isComposed() && bareCompose[container.Config.Compose.Project] {
+					addBare = !skipService(container.Config.Compose)
+				}
+				if addBare {
+					addname(wilds, alias)
 				}
 			}
 		}
 	}
-	if container.isComposed() {
+	/*
+		log.Printf("Container info: %#+v\n", container)
+		log.Printf("Container as JSON:\n%s\n", asJSON(container))
+		log.Printf("Compose info?: %v", container.isComposed())
+	*/
+	if container.isComposed() && !skipService(container.Config.Compose) {
 		comp := container.Config.Compose
+		//log.Printf("Details: %#+v", comp)
 		var prefixes []string
 		if comp.Oneoff {
 			prefixes = []string{"oneoff"}
 		} else {
 			prefixes = []string{"", fmt.Sprintf("%d", comp.Number)}
 		}
-		suffixes := []string{"", comp.Project}
+		suffixes := []string{}
+		if bareCompose[comp.Project] || bool(comp.Bare) {
+			suffixes = []string{""}
+		}
+		suffixes = append(suffixes, comp.Project)
 		for _, pref := range prefixes {
 			for _, suff := range suffixes {
 				var parts []string
@@ -1293,10 +1378,15 @@ func addContainerMappings(id string) {
 						parts = append(parts, part)
 					}
 				}
-				addname(parts...)
+				addname(int(comp.Wilds), parts...)
 			}
 		}
 	}
+	/*
+		log.Printf("Names: %#+v\n", entry.names)
+		log.Printf("Names: %s\n", asJSON(entry.names))
+		log.Printf("IP addresses: %#+v\n", entry.addrs)
+	*/
 	entry.add(id)
 }
 
@@ -1309,6 +1399,17 @@ func clearContainerMappings(id string) {
 	}
 	entry.remove(id)
 }
+
+/*
+func processDockerContainerEvent(e dockerevent) {
+	switch e.Action {
+	case Attach:
+		log.Printf("CONTAINER ATTACH EVENT: %#+v\n", e)
+	default:
+		log.Printf("CONTAINER %v EVENT\n", e.Action)
+	}
+}
+*/
 
 func serveDNS(proto string, addr string) {
 	log.Printf("Serving DNS over %s on %s\n", proto, addr)
@@ -1376,9 +1477,25 @@ func upstreamFor(name string) (servers []string) {
 	return servers
 }
 
+// FIXME: better: add docker TLDs as upstreams
+func recursingOnDocker(name string) bool {
+	labels := dns.SplitDomainName(name)
+	for i, _ := range labels {
+		tld := strings.Join(labels[i+1:], ".")
+		if isDockerTLD[dotted(tld)] {
+			return true
+		}
+	}
+	return false
+}
+
 // adapted from skydns1/server/server.go#ServeDNSForward
 func forward(w dns.ResponseWriter, req *dns.Msg) {
 	debug.Printf("Q[%v] from[%v]\n", req.Question[0].Name, w.RemoteAddr())
+	if recursingOnDocker(req.Question[0].Name) {
+		dockerResolve(w, req)
+		return
+	}
 	servers := upstreamFor(req.Question[0].Name)
 	debug.Debugf(2, "forward : servers : %q", servers)
 	if len(servers) == 0 {
@@ -1396,6 +1513,19 @@ func forward(w dns.ResponseWriter, req *dns.Msg) {
 	for _, server := range servers {
 		debug.Debugf(2, "forward : server : %s", server)
 		res, _, err := client.Exchange(req, server)
+		if res == nil {
+			if actual, ok := err.(*net.OpError); ok {
+				if actual.Timeout() {
+					log.Printf("ERROR: Timeout on %s for req %s", server, req)
+					continue
+				}
+			}
+			log.Printf("res == nil!")
+			log.Printf("from server: %#+v", server)
+			log.Printf("for req: %#+v", req)
+			log.Printf("err: %#+v", err)
+			continue
+		}
 		switch res.Rcode {
 		case dns.RcodeServerFailure:
 			debug.Printf(" <- SERVFAIL (Rcode %v, err %v)", res.Rcode, err)
@@ -1443,6 +1573,15 @@ func forward(w dns.ResponseWriter, req *dns.Msg) {
 	w.WriteMsg(m)
 }
 
+func nxdomain(w dns.ResponseWriter, req *dns.Msg) {
+	m := new(dns.Msg)
+	m.SetReply(req)
+	m.SetRcode(req, dns.RcodeNameError)
+	m.Authoritative = true
+	m.RecursionAvailable = false
+	w.WriteMsg(m)
+}
+
 func setupDebug() {
 	env := os.Getenv("DEBUG")
 	if n, err := strconv.Atoi(env); err == nil {
@@ -1468,6 +1607,15 @@ func setup4vs6() {
 		debug.Debugf(2, "Returning both IPv4 (A) and IPv6 (AAAA) records by default")
 		defaultAnswerAdder = addAnswer
 		defaultAnswerFilter = allowVersions(4, 6)
+	}
+}
+
+func setupBlackhole() {
+	discard := strings.Split(os.Getenv("BLACKHOLE"), ",")
+	for _, name := range discard {
+		if name != "" {
+			dns.HandleFunc(name, nxdomain)
+		}
 	}
 }
 
@@ -1562,9 +1710,39 @@ func setupDocker() {
 		any = true
 		log.Printf("Serving Docker hosts on .%s", dotted(tld))
 		dns.HandleFunc(dotted(tld), docker)
+		dns.HandleFunc(dotted("in-addr.arpa"), docker)
 		isDockerTLD[dotted(tld)] = true
 	}
 	if any {
+		for _, proj := range strings.Split(os.Getenv("DOCKERCOMPOSEBARE"), ",") {
+			if proj != "" {
+				bareCompose[proj] = true
+			}
+		}
+		for _, skip := range strings.Split(os.Getenv("DOCKERCOMPOSESKIP"), ",") {
+			parts := strings.Split(skip, ".")
+			if len(parts) == 0 {
+				continue
+			}
+			if len(parts) == 1 {
+				parts = []string{parts[0], "*"}
+			}
+			if len(parts) > 2 {
+				log.Printf("Invalid $DOCKERCOMPOSESKIP: [%s]", skip)
+				continue
+			}
+			service := parts[0]
+			network := parts[1]
+			log.Printf("Processing DOCKERCOMPOSESKIP: [%s] service: [%s] network: [%s]",
+				skip, service, network)
+			if _, ok := skipComposeDetails[network]; !ok {
+				log.Printf("Adding top-level for [%s]", network)
+				skipComposeDetails[network] = map[string]bool{}
+			}
+			log.Printf("Setting [%s][%s] = true", network, service)
+			skipComposeDetails[network][service] = true
+		}
+
 		go initDocker()
 	}
 }
@@ -1597,6 +1775,7 @@ func main() {
 
 	setupDebug()
 	setup4vs6()
+	setupBlackhole()
 	setupCnames()
 	setupCnameMap()
 	setupSelf()

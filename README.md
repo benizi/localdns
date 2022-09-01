@@ -81,6 +81,14 @@ All configuration is via environment variables.
     - listen on `port`, not bound to a specific interface
     - default `9753`
 
+<!-- TODO: document BLACKHOLE -->
+<!-- TODO: document BOGUS -->
+<!-- TODO: document CNAMEMAP -->
+<!-- TODO: document DEBUG -->
+<!-- TODO: document DOCKER -->
+<!-- TODO: document DOCKERHTTP -->
+<!-- TODO: document IPV -->
+
 ## Examples
 
 ### Server command

@@ -323,6 +323,13 @@ func aaaaRecord(name string, ip net.IP) *dns.AAAA {
 	}
 }
 
+func ptrRecord(name, cname string) *dns.PTR {
+	return &dns.PTR{
+		Hdr: rrHeader(name, dns.TypePTR, 60),
+		Ptr: cname,
+	}
+}
+
 func srvRecord(name string, priority, weight, port uint16, target string) *dns.SRV {
 	return &dns.SRV{
 		Hdr:      rrHeader(name, dns.TypeSRV, 60),
@@ -639,17 +646,86 @@ func docker(w dns.ResponseWriter, req *dns.Msg) {
 	listAll := q.Qtype == dns.TypeSRV
 	strip := 0
 	labels := dns.SplitDomainName(q.Name)
-	if isDockerTLD[q.Name] {
+	switch {
+	case isDockerTLD[q.Name]:
 		listAll = true
-	} else if labels[0] == "*" || labels[0][0] == '_' {
+	case labels[0] == "*" || labels[0][0] == '_':
 		listAll = true
 		strip = 1
+	case q.Qtype == dns.TypePTR:
+		dockerReverse(w, req, labels)
+		return
 	}
 	if listAll {
 		dockerList(w, req, strip)
 	} else {
 		dockerResolve(w, req)
 	}
+}
+
+func checkReverseQuery(labels []string) error {
+	switch {
+	case len(labels) != 6:
+		return fmt.Errorf("Wrong number of labels (%d)", len(labels))
+	case labels[4] != "in-addr" || labels[5] != "arpa":
+		return fmt.Errorf("Doesn't end in .in-addr.arpa: %v", labels[4:6])
+	}
+	return nil
+}
+
+func dockerReverse(w dns.ResponseWriter, req *dns.Msg, labels []string) {
+	m := new(dns.Msg)
+	m.SetReply(req)
+
+	err := checkReverseQuery(labels)
+	if err != nil {
+		log.Printf("Not a PTR query: %v", err)
+		w.WriteMsg(m)
+		return
+	}
+	containerMutex.Lock()
+	defer containerMutex.Unlock()
+	octets := make([]string, 4)
+	for i, o := range labels {
+		if i < 4 {
+			octets[3-i] = o
+		}
+	}
+	ip := strings.Join(octets, ".")
+	cids, found := containerByIP.get(ip)
+	if !found {
+		w.WriteMsg(m)
+		return
+	}
+
+	name := ""
+	any := false
+	var minp, minlen int
+	for _, cid := range cids {
+		info, found := containerInfo[cid]
+		if !found {
+			continue
+		}
+		for _, n := range info.names {
+			parts := dns.SplitDomainName(n)
+			switch {
+			case !any:
+				any = true
+				minp = len(parts)
+				minlen = len(n)
+				name = n
+			case len(parts) < minp || (len(parts) == minp && len(n) < minlen):
+				minlen = len(n)
+				name = n
+			}
+		}
+	}
+	if any {
+		ptr := ptrRecord(req.Question[0].Name, dotted(name))
+		appendRR(m, ptr)
+	}
+
+	w.WriteMsg(m)
 }
 
 /*
